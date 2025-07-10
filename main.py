@@ -1,216 +1,97 @@
 import streamlit as st
-
 import numpy as np
-
 from astropy.io import fits
+import matplotlib.pyplot as plt
+from io import BytesIO
+import base64
 
-from PIL import Image
+# Streamlit 페이지 설정
+st.set_page_config(page_title="Galaxy FITS Analyzer", layout="wide")
 
-from astropy.coordinates import SkyCoord, EarthLocation, AltAz
+# 제목
+st.title("Galaxy FITS File Analyzer")
+st.write("Upload a FITS file to visualize the galaxy image and analyze its properties.")
 
-from astropy.time import Time
+# 파일 업로더
+uploaded_file = st.file_uploader("Choose a FITS file", type=["fits", "fit"])
 
-from datetime import datetime
-
-
-# --- Streamlit 앱 페이지 설정 ---
-
-st.set_page_config(page_title="천문 이미지 분석기", layout="wide")
-
-st.title("🔭 천문 이미지 처리 앱")
-
-
-# --- 파일 업로더 ---
-
-uploaded_file = st.file_uploader(
-
-    "분석할 FITS 파일을 선택하세요.",
-
-    type=['fits', 'fit', 'fz']
-
-)
-
-
-# --- 서울 위치 설정 (고정값) ---
-
-seoul_location = EarthLocation(lat=37.5665, lon=126.9780, height=50)  # 서울 위도/경도/고도
-
-
-# --- 현재 시간 (UTC 기준) ---
-
-now = datetime.utcnow()
-
-now_astropy = Time(now)
-
-
-# --- 파일이 업로드되면 실행될 로직 ---
-
-if uploaded_file:
-
+def analyze_fits_file(file):
+    """FITS 파일을 분석하고 정보를 추출하는 함수"""
     try:
+        # FITS 파일 읽기
+        fits_data = fits.open(file)
+        image_data = fits_data[0].data
+        header = fits_data[0].header
+        fits_data.close()
 
-        with fits.open(uploaded_file) as hdul:
+        # 기본 정보 추출
+        brightness_mean = np.nanmean(image_data)
+        brightness_std = np.nanstd(image_data)
+        image_shape = image_data.shape
+        exposure_time = header.get('EXPTIME', 'N/A')
 
-            image_hdu = None
+        # 정보 표시
+        st.subheader("Basic Information")
+        st.write(f"**Image Dimensions**: {image_shape[0]} x {image_shape[1]} pixels")
+        st.write(f"**Mean Brightness**: {brightness_mean:.2f}")
+        st.write(f"**Brightness Standard Deviation**: {brightness_std:.2f}")
+        st.write(f"**Exposure Time**: {exposure_time} seconds" if exposure_time != 'N/A' else "**Exposure Time**: Not available")
 
-            for hdu in hdul:
+        # 이미지 시각화
+        st.subheader("Galaxy Image")
+        fig, ax = plt.subplots()
+        ax.imshow(image_data, cmap='gray', origin='lower')
+        ax.set_title("FITS Image")
+        ax.set_xlabel("X (pixels)")
+        ax.set_ylabel("Y (pixels)")
+        plt.colorbar(ax.imshow(image_data, cmap='gray', origin='lower'), ax=ax, label="Intensity")
+        
+        # Matplotlib 이미지를 Streamlit에 표시
+        buf = BytesIO()
+        fig.savefig(buf, format="png")
+        plt.close(fig)
+        data = base64.b64encode(buf.getbuffer()).decode("ascii")
+        st.markdown(f'<img src="data:image/png;base64,{data}" alt="FITS Image">', unsafe_allow_html=True)
 
-                if hdu.data is not None and hdu.is_image:
+        # 허블 분류 (단순화된 규칙 기반)
+        st.subheader("Hubble Classification (Simplified)")
+        aspect_ratio = image_shape[0] / image_shape[1]
+        central_brightness = np.nanmean(image_data[
+            int(image_shape[0]*0.4):int(image_shape[0]*0.6),
+            int(image_shape[1]*0.4):int(image_shape[1]*0.6)
+        ])
+        outer_brightness = np.nanmean(np.concatenate([
+            image_data[:int(image_shape[0]*0.1), :],
+            image_data[int(image_shape[0]*0.9):, :],
+            image_data[:, :int(image_shape[1]*0.1)],
+            image_data[:, int(image_shape[1]*0.9):]
+        ]))
 
-                    image_hdu = hdu
+        # 단순화된 분류 로직
+        if aspect_ratio > 1.5 or aspect_ratio < 0.67:
+            classification = "Elliptical (E)"
+            description = "The galaxy appears elongated, suggesting an elliptical shape (E0-E7)."
+        elif central_brightness > 2 * outer_brightness:
+            classification = "Spiral (S)"
+            description = "High central brightness indicates a possible spiral galaxy with a bright core."
+        else:
+            classification = "Irregular (Irr)"
+            description = "The galaxy lacks clear structure, suggesting an irregular type."
 
-                    break
-
-
-            if image_hdu is None:
-
-                st.error("파일에서 유효한 이미지 데이터를 찾을 수 없습니다.")
-
-            else:
-
-                header = image_hdu.header
-
-                data = image_hdu.data
-
-                data = np.nan_to_num(data)
-
-
-                st.success(f"**'{uploaded_file.name}'** 파일을 성공적으로 처리했습니다.")
-
-                col1, col2 = st.columns(2)
-
-
-                with col1:
-
-                    st.header("이미지 정보")
-
-                    st.text(f"크기: {data.shape[1]} x {data.shape[0]} 픽셀")
-
-                    if 'OBJECT' in header:
-
-                        st.text(f"관측 대상: {header['OBJECT']}")
-
-                    if 'EXPTIME' in header:
-
-                        st.text(f"노출 시간: {header['EXPTIME']} 초")
-
-
-                    st.header("물리량")
-
-                    mean_brightness = np.mean(data)
-
-                    st.metric(label="이미지 전체 평균 밝기", value=f"{mean_brightness:.2f}")
-
-
-                with col2:
-
-                    st.header("이미지 미리보기")
-
-                    if data.max() == data.min():
-
-                        norm_data = np.zeros(data.shape, dtype=np.uint8)
-
-                    else:
-
-                        scale_min = np.percentile(data, 5)
-
-                        scale_max = np.percentile(data, 99.5)
-
-                        data_clipped = np.clip(data, scale_min, scale_max)
-
-                        norm_data = (255 * (data_clipped - scale_min) / (scale_max - scale_min)).astype(np.uint8)
-
-
-                    img = Image.fromarray(norm_data)
-
-                    st.image(img, caption="업로드된 FITS 이미지", use_container_width=True)
-
-
-
-                # --- 사이드바: 현재 천체 위치 계산 ---
-
-                st.sidebar.header("🧭 현재 천체 위치 (서울 기준)")
-
-
-                if 'RA' in header and 'DEC' in header:
-
-                    try:
-
-                        target_coord = SkyCoord(ra=header['RA'], dec=header['DEC'], unit=('hourangle', 'deg'))
-
-                        altaz = target_coord.transform_to(AltAz(obstime=now_astropy, location=seoul_location))
-
-                        altitude = altaz.alt.degree
-
-                        azimuth = altaz.az.degree
-
-
-                        st.sidebar.metric("고도 (°)", f"{altitude:.2f}")
-
-                        st.sidebar.metric("방위각 (°)", f"{azimuth:.2f}")
-
-                    except Exception as e:
-
-                        st.sidebar.warning(f"천체 위치 계산 실패: {e}")
-
-                else:
-
-                    st.sidebar.info("FITS 헤더에 RA/DEC 정보가 없습니다.")
-
+        st.write(f"**Classification**: {classification}")
+        st.write(f"**Description**: {description}")
 
     except Exception as e:
+        st.error(f"Error processing FITS file: {str(e)}")
 
-        st.error(f"파일 처리 중 오류가 발생했습니다: {e}")
-
-        st.warning("파일이 손상되었거나 유효한 FITS 형식이 아닐 수 있습니다.")
-
+# 파일이 업로드되었을 때 분석 실행
+if uploaded_file is not None:
+    st.write("Processing FITS file...")
+    analyze_fits_file(uploaded_file)
 else:
+    st.info("Please upload a FITS file to begin analysis.")
 
-    st.info("시작하려면 FITS 파일을 업로드해주세요.")
-
-
-# --- 💬 댓글 기능 (세션 기반) ---
-
-st.divider()
-
-st.header("💬 의견 남기기")
-
-
-if "comments" not in st.session_state:
-
-    st.session_state.comments = []
-
-
-with st.form(key="comment_form"):
-
-    name = st.text_input("이름을 입력하세요", key="name_input")
-
-    comment = st.text_area("댓글을 입력하세요", key="comment_input")
-
-    submitted = st.form_submit_button("댓글 남기기")
-
-
-    if submitted:
-
-        if name.strip() and comment.strip():
-
-            st.session_state.comments.append((name.strip(), comment.strip()))
-
-            st.success("댓글이 저장되었습니다.")
-
-        else:
-
-            st.warning("이름과 댓글을 모두 입력해주세요.")
-
-
-if st.session_state.comments:
-
-    st.subheader("📋 전체 댓글")
-
-    for i, (n, c) in enumerate(reversed(st.session_state.comments), 1):
-
-        st.markdown(f"**{i}. {n}**: {c}")
-
-else:
-
-    st.info("아직 댓글이 없습니다. 첫 댓글을 남겨보세요!")
+# 추가 정보
+st.sidebar.header("About")
+st.sidebar.write("This app analyzes FITS files to visualize astronomical images and classify galaxies based on a simplified Hubble classification system.")
+st.sidebar.write("Note: The classification is a basic approximation and not a substitute for professional analysis.")
