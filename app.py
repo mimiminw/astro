@@ -13,7 +13,7 @@ st.title("Galaxy FITS File Analyzer")
 st.write("Upload a FITS file to visualize the galaxy image and analyze its properties.")
 
 # 파일 업로더
-uploaded_file = st.file_uploader("Choose a FITS file", type=["fits", "fit"])
+uploaded_file = st.file_uploader("Choose a FITS file", type=["fits", "fit", "fz"])
 
 def analyze_fits_file(file):
     """FITS 파일을 분석하고 정보를 추출하는 함수"""
