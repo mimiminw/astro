@@ -1,4 +1,7 @@
-streamlit==1.38.0
-astropy==6.1.0
-numpy==1.26.4
-matplotlib==3.9.2
+streamlit
+numpy
+matplotlib
+astropy
+fitsio
+pandas
+fpdf
