@@ -3,8 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from astropy.io import fits
 from astropy.wcs import WCS
-from photutils import DAOStarFinder
-from photutils import CircularAperture
+from photutils.detection import DAOStarFinder
+from photutils.aperture import CircularAperture
 from skimage.measure import label, regionprops
 from astropy.visualization import simple_norm
 
