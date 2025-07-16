@@ -12,7 +12,7 @@ st.set_page_config(page_title="Galaxy FITS Analyzer", layout="wide")
 
 st.title("Galaxy FITS File Analyzer")
 
-uploaded_file = st.file_uploader("Upload your Galaxy FITS file", type=["fits", "fit"])
+uploaded_file = st.file_uploader("Upload your Galaxy FITS file", type=["fits", "fit"], "fz")
 
 if uploaded_file is not None:
     # Load FITS file
