@@ -10,6 +10,9 @@ import pandas as pd
 import seaborn as sns
 import io
 import base64
+import datetime
+from astropy.coordinates import SkyCoord, AltAz, EarthLocation
+from astropy.time import Time
 
 try:
     from photutils.detection import DAOStarFinder
@@ -171,78 +174,50 @@ if uploaded_file is not None:
         if st.checkbox("헤더 전체 보기"):
             st.code(str(header))
 
+        # --- 사이드바: 현재 천체 위치 계산 ---
+        st.sidebar.header("\U0001F9ED 현재 천체 위치 (서울 기준)")
+
+        now = datetime.datetime.utcnow()
+        now_astropy = Time(now)
+        seoul_location = EarthLocation(lat=37.5665, lon=126.9780, height=38)
+
+        if 'RA' in header and 'DEC' in header:
+            try:
+                target_coord = SkyCoord(ra=header['RA'], dec=header['DEC'], unit=('hourangle', 'deg'))
+                altaz = target_coord.transform_to(AltAz(obstime=now_astropy, location=seoul_location))
+                altitude = altaz.alt.degree
+                azimuth = altaz.az.degree
+                st.sidebar.metric("고도 (°)", f"{altitude:.2f}")
+                st.sidebar.metric("방위각 (°)", f"{azimuth:.2f}")
+            except Exception as e:
+                st.sidebar.warning(f"천체 위치 계산 실패: {e}")
+        else:
+            st.sidebar.info("FITS 헤더에 RA/DEC 정보가 없습니다.")
+
         st.success("분석 완료! 더 많은 파일을 올려 실험해보세요.")
-        # --- 💬 댓글 기능 (세션 기반) ---
 
 st.divider()
 
-st.header("💬 의견 남기기")
-
+st.header("\U0001F4AC 의견 남기기")
 
 if "comments" not in st.session_state:
-
     st.session_state.comments = []
 
-
 with st.form(key="comment_form"):
-
     name = st.text_input("이름을 입력하세요", key="name_input")
-
     comment = st.text_area("댓글을 입력하세요", key="comment_input")
-
     submitted = st.form_submit_button("댓글 남기기")
 
-
     if submitted:
-
         if name.strip() and comment.strip():
-
             st.session_state.comments.append((name.strip(), comment.strip()))
-
             st.success("댓글이 저장되었습니다.")
-
         else:
-
             st.warning("이름과 댓글을 모두 입력해주세요.")
 
-
 if st.session_state.comments:
-
-    st.subheader("📋 전체 댓글")
-
+    st.subheader("\U0001F4CB 전체 댓글")
     for i, (n, c) in enumerate(reversed(st.session_state.comments), 1):
-
         st.markdown(f"**{i}. {n}**: {c}")
-
 else:
-
     st.info("아직 댓글이 없습니다. 첫 댓글을 남겨보세요!")
-       # --- 사이드바: 현재 천체 위치 계산 ---
-
-    st.sidebar.header("🧭 현재 천체 위치 (서울 기준)")
-
-
-                if 'RA' in header and 'DEC' in header:
-
-                    try:
-
-                        target_coord = SkyCoord(ra=header['RA'], dec=header['DEC'], unit=('hourangle', 'deg'))
-
-                        altaz = target_coord.transform_to(AltAz(obstime=now_astropy, location=seoul_location))
-
-                        altitude = altaz.alt.degree
-
-                        azimuth = altaz.az.degree
-
-
-                        st.sidebar.metric("고도 (°)", f"{altitude:.2f}")
-
-                        st.sidebar.metric("방위각 (°)", f"{azimuth:.2f}")
-
-                    except Exception as e:
-
-                        st.sidebar.warning(f"천체 위치 계산 실패: {e}")
-
-                else:
-
-                    st.sidebar.info("FITS 헤더에 RA/DEC 정보가 없습니다.")
