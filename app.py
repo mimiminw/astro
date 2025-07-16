@@ -3,183 +3,172 @@ import numpy as np
 import matplotlib.pyplot as plt
 from astropy.io import fits
 from astropy.wcs import WCS
-from photutils.detection import DAOStarFinder
-from photutils.aperture import CircularAperture
-from skimage.measure import label, regionprops
 from astropy.visualization import simple_norm
+from skimage.measure import label, regionprops
+import tempfile
+import pandas as pd
+import seaborn as sns
+import io
+import base64
 
-st.set_page_config(page_title="Galaxy FITS Analyzer", layout="wide")
+try:
+    from photutils.detection import DAOStarFinder
+    from photutils.aperture import CircularAperture
+except ImportError:
+    DAOStarFinder = None
+    CircularAperture = None
 
-st.title("Galaxy FITS File Analyzer")
+st.set_page_config(page_title="은하 FITS 분석기", layout="wide")
+st.title("\U0001F30C 은하 FITS 파일 분석 웹앱")
 
-uploaded_file = st.file_uploader("Upload your Galaxy FITS file", type=["fits", "fit", "fz"])
+uploaded_file = st.file_uploader("FITS 또는 FZ 파일 업로드", type=["fits", "fit", "fz"])
 
 if uploaded_file is not None:
-    # Load FITS file
-    hdul = fits.open(uploaded_file)
-    
-    # Find primary HDU with image data
-    hdu_img = None
-    for hdu in hdul:
-        if hdu.data is not None and hdu.data.ndim >= 2:
-            hdu_img = hdu
-            break
-
-    if hdu_img is None:
-        st.error("No image data found in FITS file.")
-        st.stop()
-    
-    image_data = hdu_img.data
-    header = hdu_img.header
-
-    # Show basic info
-    st.header("Basic FITS Header Information")
-    st.write(f"Object: {header.get('OBJECT', 'Unknown')}")
-    st.write(f"Observation Date: {header.get('DATE-OBS', 'Unknown')}")
-    st.write(f"Telescope: {header.get('TELESCOP', 'Unknown')}")
-    st.write(f"Instrument: {header.get('INSTRUME', 'Unknown')}")
-    st.write(f"Filter: {header.get('FILTER', 'Unknown')}")
-    st.write(f"Exposure Time (s): {header.get('EXPTIME', 'Unknown')}")
-
-    # Show image with WCS if available
-    wcs = None
-    try:
-        wcs = WCS(header)
-    except Exception as e:
-        st.warning("WCS info not available or invalid.")
-
-    st.header("Galaxy Image")
-    fig, ax = plt.subplots(figsize=(7,7))
-    norm = simple_norm(image_data, 'sqrt', percent=99)
-    if wcs:
-        ax = plt.subplot(projection=wcs)
-        ax.imshow(image_data, cmap='gray', norm=norm, origin='lower')
-        ax.set_xlabel("RA")
-        ax.set_ylabel("DEC")
-    else:
-        ax.imshow(image_data, cmap='gray', norm=norm, origin='lower')
-        ax.set_xlabel("X Pixel")
-        ax.set_ylabel("Y Pixel")
-    ax.set_title("Galaxy Image")
-    st.pyplot(fig)
-
-    # === 1. 은하의 물리적 특성: 크기, 형태, 밝기, 별 구성 ===
-    st.header("Galaxy Physical Properties")
-
-    # 간단한 threshold를 통한 은하 영역 분리
-    mean, std = np.mean(image_data), np.std(image_data)
-    threshold = mean + 3*std
-    binary = image_data > threshold
-
-    labeled_img = label(binary)
-    regions = regionprops(labeled_img)
-
-    if len(regions) == 0:
-        st.write("은하 영역을 찾지 못했습니다.")
-    else:
-        # 가장 큰 영역을 은하로 가정
-        regions.sort(key=lambda r: r.area, reverse=True)
-        galaxy_region = regions[0]
-
-        # 크기: 면적, 반경 추정
-        area_pix = galaxy_region.area
-        radius_pix = np.sqrt(area_pix / np.pi)
-
-        st.write(f"- 은하 픽셀 면적: {area_pix}")
-        st.write(f"- 은하 추정 반경 (픽셀 단위): {radius_pix:.2f}")
-
-        # 밝기: 총 밝기, 평균 밝기
-        galaxy_mask = labeled_img == galaxy_region.label
-        total_flux = np.sum(image_data[galaxy_mask])
-        mean_flux = np.mean(image_data[galaxy_mask])
-
-        st.write(f"- 은하 총 밝기 (합산 ADU): {total_flux:.2e}")
-        st.write(f"- 은하 평균 밝기: {mean_flux:.2e}")
-
-        # 형태 (타원률) 계산
-        eccentricity = galaxy_region.eccentricity
-        st.write(f"- 은하 타원률 (0=원형, 1=선형): {eccentricity:.3f}")
-
-    # === 2. 은하의 거리와 위치 (WCS + 적색편이) ===
-    st.header("Galaxy Distance & Position")
-
-    ra = header.get('RA')
-    dec = header.get('DEC')
-    redshift = header.get('REDSHIFT') or header.get('Z') or header.get('Z_V')
-
-    if ra and dec:
-        st.write(f"- RA: {ra}")
-        st.write(f"- DEC: {dec}")
-    else:
-        st.write("- RA/DEC 정보가 헤더에 없습니다.")
-
-    if redshift:
-        st.write(f"- 적색편이 (Redshift): {redshift}")
-        # 거리 계산 예시 (단순 허블법칙)
-        H0 = 70  # 허블상수 km/s/Mpc
-        c = 3e5  # 광속 km/s
+    with tempfile.NamedTemporaryFile(suffix=".fits") as tmp:
+        tmp.write(uploaded_file.read())
+        tmp.flush()
         try:
-            z = float(redshift)
-            distance_mpc = (c * z) / H0
-            st.write(f"- 추정 거리: {distance_mpc:.2f} Mpc (단순 허블법칙 적용)")
+            hdul = fits.open(tmp.name)
+        except Exception as e:
+            st.error(f"FITS 파일 열기 실패: {e}")
+            st.stop()
+
+        hdu_img = None
+        for hdu in hdul:
+            if hdu.data is not None and hdu.data.ndim >= 2:
+                hdu_img = hdu
+                break
+
+        if hdu_img is None:
+            st.error("이미지 데이터를 포함한 HDU를 찾을 수 없습니다.")
+            st.stop()
+
+        image_data = hdu_img.data
+        header = hdu_img.header
+
+        st.subheader("\U0001F4C4 FITS 기본 정보")
+        st.write(f"관측 대상: {header.get('OBJECT', '알 수 없음')}")
+        st.write(f"관측일자: {header.get('DATE-OBS', '미기록')}")
+        st.write(f"망원경: {header.get('TELESCOP', '미기록')}")
+        st.write(f"필터: {header.get('FILTER', '미기록')}")
+        st.write(f"노출 시간 (초): {header.get('EXPTIME', '미기록')}")
+        st.write(f"이미지 차원: {image_data.shape}")
+        st.write(f"스펙트럼 정보 있음: {'예' if image_data.ndim >= 3 else '아니오'}")
+
+        wcs = None
+        try:
+            wcs = WCS(header)
         except Exception:
-            st.write("- 적색편이 값 변환 실패")
-    else:
-        st.write("- 적색편이 정보가 헤더에 없습니다.")
+            pass
 
-    # === 3. 은하 운동 상태 및 상호작용 ===
-    st.header("Galaxy Kinematics & Interaction")
+        st.subheader("\U0001F52C 은하 이미지 시각화")
+        fig, ax = plt.subplots(figsize=(6, 6))
+        norm = simple_norm(image_data, 'sqrt', percent=99)
+        ax.imshow(image_data[0] if image_data.ndim == 3 else image_data, cmap='gray', norm=norm, origin='lower')
+        ax.set_title("은하 이미지")
+        st.pyplot(fig)
 
-    # 간단한 스펙트럼 큐브 데이터가 있다면 속도장 시각화 (예: 3D 데이터)
-    if image_data.ndim >= 3:
-        st.write("- 스펙트럼 큐브 데이터 발견, 운동 상태 시각화")
-        # 예시: 첫번째 파장대 이미지와 마지막 파장대 이미지 차이로 속도장 유추
-        velocity_map = image_data[-1] - image_data[0]
+        st.subheader("\U0001F52D 은하 구조 분석")
+        mean, std = np.mean(image_data), np.std(image_data)
+        threshold = mean + 3 * std
+        binary = (image_data[0] if image_data.ndim == 3 else image_data) > threshold
+        labeled_img = label(binary)
+        regions = regionprops(labeled_img)
 
-        fig2, ax2 = plt.subplots(figsize=(6,6))
-        im = ax2.imshow(velocity_map, cmap='RdBu_r', origin='lower')
-        ax2.set_title("Estimated Velocity Map (Last - First Slice)")
-        fig2.colorbar(im, ax=ax2, label='Velocity (arbitrary units)')
-        st.pyplot(fig2)
-    else:
-        st.write("- 스펙트럼 큐브 데이터가 없어 운동 상태 분석 불가")
+        if len(regions) > 0:
+            regions.sort(key=lambda r: r.area, reverse=True)
+            galaxy = regions[0]
+            st.write(f"- 면적 (픽셀 수): {galaxy.area}")
+            st.write(f"- 추정 반지름: {np.sqrt(galaxy.area / np.pi):.1f} px")
+            st.write(f"- 중심 좌표: {galaxy.centroid}")
+            st.write(f"- 타원률 (0 = 원형): {galaxy.eccentricity:.2f}")
+        else:
+            st.write("은하로 추정되는 구조를 찾지 못했습니다.")
 
-    # === 4. 은하 내 별과 가스의 화학적·물리적 상태 ===
-    st.header("Chemical & Physical Properties")
+        st.subheader("\U0001F30E 거리 및 위치 정보")
+        ra, dec = header.get('RA'), header.get('DEC')
+        z = header.get('REDSHIFT') or header.get('Z')
+        if ra and dec:
+            st.write(f"- 적경(RA): {ra}")
+            st.write(f"- 적위(DEC): {dec}")
+        if z:
+            try:
+                c = 3e5
+                H0 = 70
+                distance = (float(z) * c) / H0
+                st.write(f"- 허블 거리 추정: {distance:.1f} Mpc")
+            except:
+                st.write("- 적색편이 값이 숫자가 아닙니다.")
 
-    # 스펙트럼 데이터에서 금속성, 온도, 화학적 성분 추정(간단 예시)
-    # 실제로는 분광선 분석 필요하므로, 헤더 정보에서 관련 메타데이터 출력
+        st.subheader("\U0001F6F0️ 운동 및 활동성 해석")
+        if image_data.ndim >= 3:
+            velocity_map = image_data[-1] - image_data[0]
+            fig2, ax2 = plt.subplots(figsize=(5, 5))
+            im = ax2.imshow(velocity_map, cmap='RdBu_r', origin='lower')
+            fig2.colorbar(im, ax=ax2, label='상대 속도')
+            ax2.set_title("스펙트럼 큐브 속도 분포")
+            st.pyplot(fig2)
+        else:
+            st.write("스펙트럼 큐브가 없어 운동 분석 불가")
 
-    metalicity = header.get('METALLIC')
-    temperature = header.get('TEFF') or header.get('TEMPERAT')
+        st.subheader("\U0001F52A 화학적 물리적 성질")
+        temp = header.get('TEFF') or header.get('TEMP')
+        metal = header.get('METAL') or header.get('FE_H')
+        sfr = header.get('SFR')
+        st.write(f"- 별의 유효 온도: {temp if temp else '정보 없음'}")
+        st.write(f"- 금속성 [Fe/H]: {metal if metal else '정보 없음'}")
+        st.write(f"- 별 생성률 SFR: {sfr if sfr else '정보 없음'}")
 
-    if metalicity:
-        st.write(f"- 금속성(Metallicity): {metalicity}")
-    else:
-        st.write("- 금속성 정보가 없습니다.")
+        st.subheader("\U0001F680 활동성 은하핵(AGN) 여부")
+        agn = header.get('AGN') or header.get('ACTIVITY')
+        if agn:
+            st.write(f"- AGN 존재 여부: {agn}")
+        else:
+            st.write("- AGN 관련 정보 없음")
 
-    if temperature:
-        st.write(f"- 별의 유효온도(Effective Temperature): {temperature}")
-    else:
-        st.write("- 온도 정보가 없습니다.")
+        st.subheader("\U0001F3A8 H-R 도표 (임의의 색지수 기반)")
+        if 'B_MAG' in header and 'V_MAG' in header:
+            b = float(header['B_MAG'])
+            v = float(header['V_MAG'])
+            color_index = b - v
+            hr_data = pd.DataFrame({"색지수 B-V": [color_index], "광도": [v]})
+            fig_hr, ax_hr = plt.subplots()
+            ax_hr.scatter(hr_data["색지수 B-V"], hr_data["광도"], color='blue')
+            ax_hr.invert_yaxis()
+            ax_hr.set_xlabel("B-V 색지수")
+            ax_hr.set_ylabel("밝기 (V)")
+            ax_hr.set_title("H-R 도표 위치")
+            st.pyplot(fig_hr)
 
-    # === 5. 은하 진화 및 활동성 ===
-    st.header("Galaxy Evolution & Activity Indicators")
+        st.subheader("\U0001F31F 세페이드 변광성 거리 측정 시뮬레이션")
+        if 'PERIOD' in header:
+            P = float(header['PERIOD'])
+            Mv = -2.76 * np.log10(P) - 1.0
+            mv = float(header.get('V_MAG', Mv + 10))
+            d = 10 ** ((mv - Mv + 5) / 5)
+            st.write(f"- 주기: {P} 일")
+            st.write(f"- 절대 등급(Mv): {Mv:.2f}")
+            st.write(f"- 거리 추정: {d:.2f} pc")
 
-    # AGN(활동성 은하핵) 여부, 별 형성 영역에 대한 메타데이터가 있으면 표시
-    agn_flag = header.get('AGN') or header.get('ACTIVITY')
-    sf_rate = header.get('SFR')  # Star Formation Rate
+        st.subheader("\U0001FA90 외계행성 트랜싯 시뮬레이션")
+        if 'DEPTH' in header and 'DURATION' in header and 'PERIOD' in header:
+            depth = float(header['DEPTH'])
+            duration = float(header['DURATION'])
+            period = float(header['PERIOD'])
+            time = np.linspace(0, period, 1000)
+            flux = np.ones_like(time)
+            center = period / 2
+            mask = (time > center - duration/2) & (time < center + duration/2)
+            flux[mask] -= depth
+            fig_tr, ax_tr = plt.subplots()
+            ax_tr.plot(time, flux, color='black')
+            ax_tr.set_xlabel("시간 (일)")
+            ax_tr.set_ylabel("상대 광도")
+            ax_tr.set_title("외계행성 트랜싯 곡선")
+            st.pyplot(fig_tr)
 
-    if agn_flag:
-        st.write(f"- AGN 활동성 지표: {agn_flag}")
-    else:
-        st.write("- AGN 관련 정보 없음")
+        st.subheader("\U0001F4C1 FITS 헤더 전체 보기")
+        if st.checkbox("헤더 전체 보기"):
+            st.code(str(header))
 
-    if sf_rate:
-        st.write(f"- 별 형성률(Star Formation Rate): {sf_rate}")
-    else:
-        st.write("- 별 형성률 정보 없음")
-
-    st.write("**참고:** 상세 분석은 스펙트럼 라인 피팅, 모델링 등을 통해 진행해야 합니다.")
-
-    hdul.close()
+        st.success("분석 완료! 더 많은 파일을 올려 실험해보세요.")
