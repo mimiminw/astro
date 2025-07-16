@@ -172,3 +172,48 @@ if uploaded_file is not None:
             st.code(str(header))
 
         st.success("분석 완료! 더 많은 파일을 올려 실험해보세요.")
+        # --- 💬 댓글 기능 (세션 기반) ---
+
+st.divider()
+
+st.header("💬 의견 남기기")
+
+
+if "comments" not in st.session_state:
+
+    st.session_state.comments = []
+
+
+with st.form(key="comment_form"):
+
+    name = st.text_input("이름을 입력하세요", key="name_input")
+
+    comment = st.text_area("댓글을 입력하세요", key="comment_input")
+
+    submitted = st.form_submit_button("댓글 남기기")
+
+
+    if submitted:
+
+        if name.strip() and comment.strip():
+
+            st.session_state.comments.append((name.strip(), comment.strip()))
+
+            st.success("댓글이 저장되었습니다.")
+
+        else:
+
+            st.warning("이름과 댓글을 모두 입력해주세요.")
+
+
+if st.session_state.comments:
+
+    st.subheader("📋 전체 댓글")
+
+    for i, (n, c) in enumerate(reversed(st.session_state.comments), 1):
+
+        st.markdown(f"**{i}. {n}**: {c}")
+
+else:
+
+    st.info("아직 댓글이 없습니다. 첫 댓글을 남겨보세요!")
