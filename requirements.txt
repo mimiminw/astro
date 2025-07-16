@@ -1,7 +1,6 @@
 streamlit
+astropy
 numpy
 matplotlib
-astropy
-fitsio
-pandas
-fpdf
+photutils
+scikit-image
