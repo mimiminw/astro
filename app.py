@@ -217,3 +217,32 @@ if st.session_state.comments:
 else:
 
     st.info("아직 댓글이 없습니다. 첫 댓글을 남겨보세요!")
+       # --- 사이드바: 현재 천체 위치 계산 ---
+
+                st.sidebar.header("🧭 현재 천체 위치 (서울 기준)")
+
+
+                if 'RA' in header and 'DEC' in header:
+
+                    try:
+
+                        target_coord = SkyCoord(ra=header['RA'], dec=header['DEC'], unit=('hourangle', 'deg'))
+
+                        altaz = target_coord.transform_to(AltAz(obstime=now_astropy, location=seoul_location))
+
+                        altitude = altaz.alt.degree
+
+                        azimuth = altaz.az.degree
+
+
+                        st.sidebar.metric("고도 (°)", f"{altitude:.2f}")
+
+                        st.sidebar.metric("방위각 (°)", f"{azimuth:.2f}")
+
+                    except Exception as e:
+
+                        st.sidebar.warning(f"천체 위치 계산 실패: {e}")
+
+                else:
+
+                    st.sidebar.info("FITS 헤더에 RA/DEC 정보가 없습니다.")
