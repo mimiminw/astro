@@ -1,8 +1,8 @@
 streamlit
 numpy
-matplotlib
 astropy
-photutils>=1.7.0
-scikit-image
-pandas
-seaborn
+Pillow
+photutils
+scipy
+matplotlib
+pydeck
