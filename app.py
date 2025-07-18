@@ -9,23 +9,16 @@ from scipy.stats import skew
 from sklearn.ensemble import RandomForestClassifier
 import pydeck as pdk
 
-# --- Streamlit 앱 페이지 설정 ---
-st.set_page_config(page_title="천문 이미지 분석기 (ML 기반 은하 분류)", layout="wide")
-
+# --- 페이지 설정 ---
+st.set_page_config(page_title="천문 이미지 분석기 (ML 은하 분류)", layout="wide")
 st.title("🔭 천문 이미지 처리 및 머신러닝 은하 분류 앱")
 
-# --- 파일 업로더 ---
-uploaded_file = st.file_uploader(
-    "분석할 FITS 파일을 선택하세요.",
-    type=['fits', 'fit', 'fz']
-)
-
-# --- 서울 위치 설정 (고정값) ---
+# --- 서울 위치 및 현재 시간 ---
 seoul_location = EarthLocation(lat=37.5665, lon=126.9780, height=50)
 now = datetime.utcnow()
 now_astropy = Time(now)
 
-# --- 관측소 이름과 좌표 추정 DB (일부 예시) ---
+# --- 관측소 DB ---
 observatory_db = {
     "KECK": {"name": "Keck Observatory", "lat": 19.8283, "lon": -155.4781},
     "VLT": {"name": "Very Large Telescope", "lat": -24.6270, "lon": -70.4045},
@@ -33,9 +26,8 @@ observatory_db = {
     "KPNO": {"name": "Kitt Peak National Observatory", "lat": 31.9583, "lon": -111.5983}
 }
 
-# --- 머신러닝 모델 및 가상 학습 데이터 준비 ---
+# --- 머신러닝 모델 (가상 학습 데이터) ---
 def train_sample_model():
-    # 가상 데이터: [mean, median, std, skewness, concentration, aspect_ratio]
     X_train = [
         [6000, 5800, 300, 0.1, 2.0, 1.0],  # 타원은하
         [3500, 3300, 600, 1.0, 1.0, 1.5],  # 나선은하
@@ -58,6 +50,7 @@ def train_sample_model():
 
 model = train_sample_model()
 
+# --- 특징 추출 함수 ---
 def extract_features(data):
     height, width = data.shape
     mean_brightness = np.mean(data)
@@ -68,10 +61,13 @@ def extract_features(data):
 
     center_slice = data[height//3:2*height//3, width//3:2*width//3]
     center_mean = np.mean(center_slice)
-    outer_mean = (np.mean(data) * height * width - center_mean * center_slice.size) / (height * width - center_slice.size)
+    outer_mean = (np.mean(data)*height*width - center_mean*center_slice.size) / (height*width - center_slice.size)
     concentration = center_mean / (outer_mean + 1e-5)
 
     return [mean_brightness, median_brightness, std_brightness, skewness, concentration, aspect_ratio]
+
+# --- 파일 업로드 ---
+uploaded_file = st.file_uploader("분석할 FITS 파일을 선택하세요.", type=['fits', 'fit', 'fz'])
 
 if uploaded_file:
     try:
@@ -105,7 +101,7 @@ if uploaded_file:
                     mean_brightness = np.mean(data)
                     st.metric(label="이미지 전체 평균 밝기", value=f"{mean_brightness:.2f}")
 
-                    # --- 머신러닝 기반 은하 분류 ---
+                    # 머신러닝 은하 분류
                     features = extract_features(data)
                     classification = model.predict([features])[0]
                     st.metric(label="머신러닝 예측 은하 유형", value=classification)
@@ -123,7 +119,7 @@ if uploaded_file:
                     img = Image.fromarray(norm_data)
                     st.image(img, caption="업로드된 FITS 이미지", use_container_width=True)
 
-                # --- 사이드바: 현재 천체 위치 계산 ---
+                # 사이드바: 천체 위치 계산 (서울 기준)
                 st.sidebar.header("🧭 현재 천체 위치 (서울 기준)")
                 if 'RA' in header and 'DEC' in header:
                     try:
@@ -136,7 +132,7 @@ if uploaded_file:
                 else:
                     st.sidebar.info("FITS 헤더에 RA/DEC 정보가 없습니다.")
 
-                # --- 관측소 위치 시각화 ---
+                # 관측소 위치 시각화
                 st.subheader("🗺️ 관측소 위치 표시")
                 tele_name = header.get('TELESCOP', '').upper().strip()
                 st.write(f"TELESCOP 헤더 값: '{tele_name}'")
@@ -175,11 +171,12 @@ if uploaded_file:
 else:
     st.info("시작하려면 FITS 파일을 업로드해주세요.")
 
-# --- 💬 댓글 기능 (세션 기반) ---
+# --- 댓글 기능 ---
 st.divider()
 st.header("💬 의견 남기기")
 if "comments" not in st.session_state:
     st.session_state.comments = []
+
 with st.form(key="comment_form"):
     name = st.text_input("이름을 입력하세요", key="name_input")
     comment = st.text_area("댓글을 입력하세요", key="comment_input")
@@ -190,6 +187,7 @@ with st.form(key="comment_form"):
             st.success("댓글이 저장되었습니다.")
         else:
             st.warning("이름과 댓글을 모두 입력해주세요.")
+
 if st.session_state.comments:
     st.subheader("📋 전체 댓글")
     for i, (n, c) in enumerate(reversed(st.session_state.comments), 1):
