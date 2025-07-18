@@ -44,12 +44,13 @@ def load_and_train_model(data_path):
     y = df['label'].values
     model = RandomForestClassifier(n_estimators=200, random_state=42)
     model.fit(X, y)
-    return model
+    return model, df
 
-model = load_and_train_model(csv_path)
+model, base_df = load_and_train_model(csv_path)
 
 # --- 2) 라벨 맵핑 ---
 label_map = {0: "타원은하 (Elliptical)", 1: "나선은하 (Spiral)", 2: "불규칙은하 (Irregular)"}
+label_str_to_num = {v:k for k,v in label_map.items()}
 
 # --- 3) 관측소 DB 및 위치 ---
 observatory_db = {
@@ -94,9 +95,12 @@ def match_observatory(tname, db):
     return None
 
 # --- 5) 스트림릿 UI ---
-
 st.set_page_config(page_title="천문 이미지 분석기 (ML 은하 분류)", layout="wide")
 st.title("🔭 천문 이미지 처리 및 머신러닝 은하 분류 앱")
+
+# 사용자 데이터 저장용 (세션 상태)
+if "user_data" not in st.session_state:
+    st.session_state.user_data = []
 
 uploaded = st.file_uploader("분석할 FITS 파일을 선택하세요.", type=['fits','fit','fz'])
 
@@ -134,6 +138,29 @@ if uploaded:
             pred_num = model.predict([feats])[0]
             pred_label = label_map.get(pred_num, str(pred_num))
             st.metric("예측 은하 유형", pred_label)
+
+            # 사용자 라벨 입력
+            st.subheader("▶ 실제 은하 유형을 선택하고 학습 데이터에 추가")
+            user_label = st.selectbox("실제 은하 유형을 선택하세요", list(label_str_to_num.keys()))
+            if st.button("이 데이터로 학습 데이터 추가"):
+                st.session_state.user_data.append((feats, label_str_to_num[user_label]))
+                st.success(f"데이터가 추가되었습니다! 현재 학습 데이터 수: {len(st.session_state.user_data)}")
+
+            if st.button("모델 재학습"):
+                if len(st.session_state.user_data) > 0:
+                    # 기존 데이터 + 사용자 데이터 합치기
+                    user_feats = np.array([x[0] for x in st.session_state.user_data])
+                    user_labels = np.array([x[1] for x in st.session_state.user_data])
+                    X = np.vstack([base_df[[
+                        'mean_brightness','median_brightness','std_brightness',
+                        'skewness','concentration','aspect_ratio'
+                    ]].values, user_feats])
+                    y = np.concatenate([base_df['label'].values, user_labels])
+                    # 모델 재학습
+                    model.fit(X, y)
+                    st.success("모델이 재학습되었습니다!")
+                else:
+                    st.warning("추가된 학습 데이터가 없습니다.")
 
         with col2:
             st.header("이미지 미리보기")
