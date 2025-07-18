@@ -5,17 +5,14 @@ from PIL import Image
 from astropy.coordinates import SkyCoord, EarthLocation, AltAz
 from astropy.time import Time
 from datetime import datetime
-from astropy.stats import sigma_clipped_stats
-from photutils.detection import DAOStarFinder
-from photutils.aperture import CircularAperture
-from scipy.ndimage import gaussian_filter
-import matplotlib.pyplot as plt
+from scipy.stats import skew
+from sklearn.ensemble import RandomForestClassifier
 import pydeck as pdk
 
 # --- Streamlit 앱 페이지 설정 ---
-st.set_page_config(page_title="천문 이미지 분석기", layout="wide")
+st.set_page_config(page_title="천문 이미지 분석기 (ML 기반 은하 분류)", layout="wide")
 
-st.title("🔭 천문 이미지 처리 앱")
+st.title("🔭 천문 이미지 처리 및 머신러닝 은하 분류 앱")
 
 # --- 파일 업로더 ---
 uploaded_file = st.file_uploader(
@@ -25,19 +22,8 @@ uploaded_file = st.file_uploader(
 
 # --- 서울 위치 설정 (고정값) ---
 seoul_location = EarthLocation(lat=37.5665, lon=126.9780, height=50)
-
-# --- 현재 시간 (UTC 기준) ---
 now = datetime.utcnow()
 now_astropy = Time(now)
-
-# --- 은하 분류 (단순 허블 분류 예측기) ---
-def classify_galaxy(mean_brightness, shape):
-    if mean_brightness > 1000:
-        return "🌟 타원은하 (E형)"
-    elif shape[0] > shape[1] * 1.5:
-        return "💫 나선은하 (S형)"
-    else:
-        return "🌌 불규칙은하 (Irr형)"
 
 # --- 관측소 이름과 좌표 추정 DB (일부 예시) ---
 observatory_db = {
@@ -46,6 +32,46 @@ observatory_db = {
     "SUBARU": {"name": "Subaru Telescope", "lat": 19.825, "lon": -155.4761},
     "KPNO": {"name": "Kitt Peak National Observatory", "lat": 31.9583, "lon": -111.5983}
 }
+
+# --- 머신러닝 모델 및 가상 학습 데이터 준비 ---
+def train_sample_model():
+    # 가상 데이터: [mean, median, std, skewness, concentration, aspect_ratio]
+    X_train = [
+        [6000, 5800, 300, 0.1, 2.0, 1.0],  # 타원은하
+        [3500, 3300, 600, 1.0, 1.0, 1.5],  # 나선은하
+        [1000, 900, 900, 0.5, 0.8, 1.2],   # 불규칙은하
+        [7000, 6800, 250, 0.2, 2.2, 1.1],  # 타원은하
+        [3000, 2800, 700, 1.2, 0.9, 1.6],  # 나선은하
+        [900, 800, 850, 0.4, 0.7, 1.0],    # 불규칙은하
+    ]
+    y_train = [
+        "타원은하 (E형)",
+        "나선은하 (S형)",
+        "불규칙은하 (Irr형)",
+        "타원은하 (E형)",
+        "나선은하 (S형)",
+        "불규칙은하 (Irr형)"
+    ]
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
+    return model
+
+model = train_sample_model()
+
+def extract_features(data):
+    height, width = data.shape
+    mean_brightness = np.mean(data)
+    median_brightness = np.median(data)
+    std_brightness = np.std(data)
+    skewness = skew(data.flatten())
+    aspect_ratio = height / width
+
+    center_slice = data[height//3:2*height//3, width//3:2*width//3]
+    center_mean = np.mean(center_slice)
+    outer_mean = (np.mean(data) * height * width - center_mean * center_slice.size) / (height * width - center_slice.size)
+    concentration = center_mean / (outer_mean + 1e-5)
+
+    return [mean_brightness, median_brightness, std_brightness, skewness, concentration, aspect_ratio]
 
 if uploaded_file:
     try:
@@ -64,6 +90,7 @@ if uploaded_file:
                 data = np.nan_to_num(data)
 
                 st.success(f"**'{uploaded_file.name}'** 파일을 성공적으로 처리했습니다.")
+
                 col1, col2 = st.columns(2)
 
                 with col1:
@@ -78,9 +105,10 @@ if uploaded_file:
                     mean_brightness = np.mean(data)
                     st.metric(label="이미지 전체 평균 밝기", value=f"{mean_brightness:.2f}")
 
-                    # --- 허블 분류
-                    classification = classify_galaxy(mean_brightness, data.shape)
-                    st.metric(label="예상 은하 유형", value=classification)
+                    # --- 머신러닝 기반 은하 분류 ---
+                    features = extract_features(data)
+                    classification = model.predict([features])[0]
+                    st.metric(label="머신러닝 예측 은하 유형", value=classification)
 
                 with col2:
                     st.header("이미지 미리보기")
@@ -108,10 +136,10 @@ if uploaded_file:
                 else:
                     st.sidebar.info("FITS 헤더에 RA/DEC 정보가 없습니다.")
 
-                # --- 관측소 위치 시각화 (수정된 부분) ---
+                # --- 관측소 위치 시각화 ---
                 st.subheader("🗺️ 관측소 위치 표시")
                 tele_name = header.get('TELESCOP', '').upper().strip()
-                st.write(f"TELESCOP 헤더 값: '{tele_name}'")  # 디버깅용 출력
+                st.write(f"TELESCOP 헤더 값: '{tele_name}'")
 
                 observatory_found = None
                 for key in observatory_db:
