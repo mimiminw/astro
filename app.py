@@ -108,13 +108,17 @@ if uploaded_file:
                 else:
                     st.sidebar.info("FITS 헤더에 RA/DEC 정보가 없습니다.")
 
-                # --- 관측소 위치 시각화 ---
+                # --- 관측소 위치 시각화 (수정된 부분) ---
                 st.subheader("🗺️ 관측소 위치 표시")
+                tele_name = header.get('TELESCOP', '').upper().strip()
+                st.write(f"TELESCOP 헤더 값: '{tele_name}'")  # 디버깅용 출력
+
                 observatory_found = None
                 for key in observatory_db:
-                    if key in header.get('TELESCOP', ''):
+                    if key in tele_name:
                         observatory_found = observatory_db[key]
                         break
+
                 if observatory_found:
                     st.markdown(f"**관측소 이름:** {observatory_found['name']}")
                     st.pydeck_chart(pdk.Deck(
