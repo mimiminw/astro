@@ -1,8 +1,8 @@
-streamlit
+streamlit>=1.18.0
 numpy
 pandas
-tensorflow
 astropy
-scipy
 pillow
+scipy
+scikit-learn
 pydeck
