@@ -1,57 +1,22 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
-from scipy.stats import skew
-from PIL import Image
+import tensorflow as tf
+from tensorflow.keras import layers, models
 from astropy.io import fits
 from astropy.coordinates import SkyCoord, EarthLocation, AltAz
 from astropy.time import Time
 from datetime import datetime
 from difflib import get_close_matches
 import pydeck as pdk
-import os
+from scipy.ndimage import zoom
+from PIL import Image
 
-# --- 0) 가상 데이터 생성 (최초 1회만 실행) ---
-os.makedirs("data", exist_ok=True)
-csv_path = "data/galaxy_features.csv"
-if not os.path.exists(csv_path):
-    data = {
-        "mean_brightness": [100, 150, 80, 130, 90, 160, 110, 140, 70, 120],
-        "median_brightness": [95, 140, 75, 125, 85, 155, 105, 135, 65, 115],
-        "std_brightness": [10, 15, 8, 12, 9, 14, 11, 13, 7, 10],
-        "skewness": [0.5, 0.3, -0.2, 0.1, 0.4, 0.0, 0.2, 0.3, -0.1, 0.1],
-        "concentration": [1.2, 1.5, 0.9, 1.1, 1.0, 1.6, 1.3, 1.4, 0.8, 1.2],
-        "aspect_ratio": [1.0, 1.1, 0.9, 1.05, 0.95, 1.15, 1.0, 1.1, 0.85, 1.0],
-        "label": [0, 1, 2, 1, 0, 1, 0, 1, 2, 0]
-    }
-    df = pd.DataFrame(data)
-    df.to_csv(csv_path, index=False)
-    st.info("가상 데이터셋이 생성되었습니다.")
+# --- 설정 ---
+st.set_page_config(page_title="CNN 은하 분류 앱 (통합)", layout="wide")
+st.title("🔭 CNN 기반 FITS 은하 이미지 분류 및 관측소 분석 앱")
 
-# --- 1) 모델 학습 함수 ---
-@st.cache_resource
-def load_and_train_model(data_path):
-    df = pd.read_csv(data_path)
-    df = df.dropna(subset=[
-        'mean_brightness','median_brightness','std_brightness',
-        'skewness','concentration','aspect_ratio','label'
-    ])
-    X = df[[
-        'mean_brightness','median_brightness','std_brightness',
-        'skewness','concentration','aspect_ratio'
-    ]].values
-    y = df['label'].values
-    model = RandomForestClassifier(n_estimators=200, random_state=42)
-    model.fit(X, y)
-    return model
-
-model = load_and_train_model(csv_path)
-
-# --- 2) 라벨 맵핑 ---
-label_map = {0: "타원은하 (Elliptical)", 1: "나선은하 (Spiral)", 2: "불규칙은하 (Irregular)"}
-
-# --- 3) 관측소 DB 및 위치 ---
+# --- 관측소 DB ---
 observatory_db = {
     "KECK": {"name":"Keck Observatory","lat":19.8283,"lon":-155.4781},
     "VLT":  {"name":"Very Large Telescope","lat":-24.6270,"lon":-70.4045},
@@ -61,27 +26,66 @@ observatory_db = {
 seoul_location = EarthLocation(lat=37.5665, lon=126.9780, height=50)
 now_astropy = Time(datetime.utcnow())
 
-# --- 4) 이미지 전처리 및 특징 추출 함수 ---
-def robust_preprocess(data):
-    data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
-    if np.all(data == data.flat[0]):
-        raise ValueError("이미지가 균일하여 분석에 부적합합니다.")
-    lower, upper = np.percentile(data, [2, 98])
-    return np.clip(data, lower, upper)
+IMG_SIZE = 64
 
-def extract_features(data):
-    h, w = data.shape
-    mean_b = data.mean()
-    median_b = np.median(data)
-    std_b = data.std()
-    skew_b = skew(data.flatten())
-    aspect = h / w
-    center = data[h//3:2*h//3, w//3:2*w//3]
-    c_mean = center.mean()
-    outer = (mean_b*h*w - c_mean*center.size) / (h*w - center.size)
-    concentrate = c_mean / (outer + 1e-5)
-    return [mean_b, median_b, std_b, skew_b, concentrate, aspect]
+# --- CNN 모델 정의 ---
+def create_cnn_model():
+    model = models.Sequential([
+        layers.Input(shape=(IMG_SIZE, IMG_SIZE, 1)),
+        layers.Conv2D(32, 3, activation='relu'),
+        layers.MaxPooling2D(2),
+        layers.Conv2D(64, 3, activation='relu'),
+        layers.MaxPooling2D(2),
+        layers.Flatten(),
+        layers.Dense(64, activation='relu'),
+        layers.Dense(3, activation='softmax')
+    ])
+    model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+    return model
 
+# --- 가상 데이터 생성 ---
+def generate_fake_dataset(num_samples=300):
+    X = []
+    y = []
+    for i in range(num_samples):
+        label = i % 3
+        if label == 0:
+            img = np.random.normal(loc=0.7, scale=0.1, size=(IMG_SIZE, IMG_SIZE))
+            img = img * np.exp(-((np.indices((IMG_SIZE, IMG_SIZE))[0]-IMG_SIZE//2)**2 + (np.indices((IMG_SIZE, IMG_SIZE))[1]-IMG_SIZE//2)**2)/1000)
+        elif label == 1:
+            img = np.zeros((IMG_SIZE, IMG_SIZE))
+            for angle in range(0, 360, 30):
+                x = np.arange(IMG_SIZE)
+                y_ = ((np.sin(np.radians(x*5 + angle)) + 1) / 2) * IMG_SIZE
+                y_ = y_.astype(int)
+                img[(y_ % IMG_SIZE, x % IMG_SIZE)] += 0.7
+            img += np.random.normal(scale=0.1, size=(IMG_SIZE, IMG_SIZE))
+            img = np.clip(img, 0, 1)
+        else:
+            img = np.random.rand(IMG_SIZE, IMG_SIZE) * 0.8
+            img += np.random.normal(scale=0.3, size=(IMG_SIZE, IMG_SIZE))
+            img = np.clip(img, 0, 1)
+        X.append(img)
+        y.append(label)
+    X = np.array(X)[..., np.newaxis].astype(np.float32)
+    y = np.array(y)
+    return X, y
+
+# --- FITS 전처리 ---
+def preprocess_fits_image(hdul):
+    img_hdu = next((h for h in hdul if h.data is not None and h.is_image), None)
+    if img_hdu is None:
+        raise ValueError("유효한 이미지 HDU를 찾을 수 없습니다.")
+    data = img_hdu.data
+    data = np.nan_to_num(data, nan=0.0)
+    lower, upper = np.percentile(data, [5, 99])
+    data = np.clip(data, lower, upper)
+    data = (data - lower) / (upper - lower)
+    zoom_factors = (IMG_SIZE / data.shape[0], IMG_SIZE / data.shape[1])
+    data_resized = zoom(data, zoom_factors)
+    return data_resized.astype(np.float32)[..., np.newaxis]
+
+# --- 관측소 매칭 ---
 def match_observatory(tname, db):
     keys = list(db.keys())
     name = tname.upper().strip()
@@ -93,53 +97,38 @@ def match_observatory(tname, db):
             return db[k]
     return None
 
-# --- 5) 스트림릿 UI ---
+# --- 모델 학습 (캐시) ---
+@st.cache_resource
+def train_model():
+    model = create_cnn_model()
+    X_train, y_train = generate_fake_dataset()
+    model.fit(X_train, y_train, epochs=10, batch_size=32, verbose=0)
+    return model
 
-st.set_page_config(page_title="천문 이미지 분석기 (ML 은하 분류)", layout="wide")
-st.title("🔭 천문 이미지 처리 및 머신러닝 은하 분류 앱")
+model = train_model()
+label_names = ["타원은하 (Elliptical)", "나선은하 (Spiral)", "불규칙은하 (Irregular)"]
 
-uploaded = st.file_uploader("분석할 FITS 파일을 선택하세요.", type=['fits','fit','fz'])
+# --- FITS 업로드 및 처리 ---
+uploaded = st.file_uploader("FITS 파일을 업로드하세요", type=['fits','fit','fz'])
 
 if uploaded:
     try:
         hdul = fits.open(uploaded)
-        img_hdu = next((h for h in hdul if h.data is not None and h.is_image), None)
-        if img_hdu is None:
-            st.error("유효한 이미지 HDU를 찾을 수 없습니다.")
-            st.stop()
+        img = preprocess_fits_image(hdul)
+        st.image(img[:,:,0], caption="전처리된 이미지 (64x64)", use_container_width=True)
 
-        raw = img_hdu.data
-        try:
-            data = robust_preprocess(raw)
-        except ValueError as e:
-            st.warning(str(e))
-            st.stop()
+        pred_probs = model.predict(np.expand_dims(img, axis=0))
+        pred_class = np.argmax(pred_probs)
+        st.metric("예측 은하 유형", label_names[pred_class])
+        st.write(f"확률: {pred_probs[0][pred_class]:.3f}")
 
-        hdr = img_hdu.header
-        st.success(f"'{uploaded.name}' 처리 완료")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.header("이미지 메타정보")
-            st.text(f"크기: {data.shape[1]} x {data.shape[0]} px")
-            if 'OBJECT' in hdr:
-                st.text(f"대상: {hdr['OBJECT']}")
-            if 'EXPTIME' in hdr:
-                st.text(f"노출: {hdr['EXPTIME']} s")
-
-            st.header("물리량 & 분류")
-            st.metric("평균 밝기", f"{data.mean():.2f}")
-            feats = extract_features(data)
-            pred_num = model.predict([feats])[0]
-            pred_label = label_map.get(pred_num, str(pred_num))
-            st.metric("예측 은하 유형", pred_label)
-
-        with col2:
-            st.header("이미지 미리보기")
-            vmin, vmax = np.percentile(data, [5, 99.5])
-            norm = ((np.clip(data, vmin, vmax) - vmin) / (vmax - vmin) * 255).astype(np.uint8)
-            st.image(Image.fromarray(norm), use_container_width=True)
+        hdr = hdul[0].header
+        st.header("이미지 메타정보")
+        st.text(f"원본 크기: {hdul[0].data.shape[1]} x {hdul[0].data.shape[0]} px")
+        if 'OBJECT' in hdr:
+            st.text(f"대상: {hdr['OBJECT']}")
+        if 'EXPTIME' in hdr:
+            st.text(f"노출: {hdr['EXPTIME']} s")
 
         # 사이드바: RA/DEC → AltAz 변환
         st.sidebar.header("🧭 천체 위치 (서울 기준)")
@@ -179,7 +168,7 @@ if uploaded:
 else:
     st.info("시작하려면 FITS 파일을 업로드하세요.")
 
-# --- 6) 댓글 기능 ---
+# --- 댓글 기능 ---
 st.divider()
 st.header("💬 의견 남기기")
 if "comments" not in st.session_state:
