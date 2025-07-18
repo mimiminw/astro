@@ -1,222 +1,165 @@
 import streamlit as st
 import numpy as np
-import matplotlib.pyplot as plt
 from astropy.io import fits
-from astropy.wcs import WCS
-from astropy.visualization import simple_norm
-from skimage.measure import label, regionprops
-import tempfile
-import pandas as pd
-import seaborn as sns
-import io
-import base64
-import datetime
-from astropy.coordinates import SkyCoord, AltAz, EarthLocation
+from PIL import Image
+from astropy.coordinates import SkyCoord, EarthLocation, AltAz
 from astropy.time import Time
+from datetime import datetime
+from astropy.stats import sigma_clipped_stats
+from photutils.detection import DAOStarFinder
+from photutils.aperture import CircularAperture
+from scipy.ndimage import gaussian_filter
+import matplotlib.pyplot as plt
+import pydeck as pdk
 
-try:
-    from photutils.detection import DAOStarFinder
-    from photutils.aperture import CircularAperture
-except ImportError:
-    DAOStarFinder = None
-    CircularAperture = None
+# --- Streamlit 앱 페이지 설정 ---
+st.set_page_config(page_title="천문 이미지 분석기", layout="wide")
 
-st.set_page_config(page_title="은하 FITS 분석기", layout="wide")
-st.title("\U0001F30C 은하 FITS 파일 분석 웹앱")
+st.title("🔭 천문 이미지 처리 앱")
 
-uploaded_file = st.file_uploader("FITS 또는 FZ 파일 업로드", type=["fits", "fit", "fz"])
+# --- 파일 업로더 ---
+uploaded_file = st.file_uploader(
+    "분석할 FITS 파일을 선택하세요.",
+    type=['fits', 'fit', 'fz']
+)
 
-if uploaded_file is not None:
-    with tempfile.NamedTemporaryFile(suffix=".fits") as tmp:
-        tmp.write(uploaded_file.read())
-        tmp.flush()
-        try:
-            hdul = fits.open(tmp.name)
-        except Exception as e:
-            st.error(f"FITS 파일 열기 실패: {e}")
-            st.stop()
+# --- 서울 위치 설정 (고정값) ---
+seoul_location = EarthLocation(lat=37.5665, lon=126.9780, height=50)
 
-        hdu_img = None
-        for hdu in hdul:
-            if hdu.data is not None and hdu.data.ndim >= 2:
-                hdu_img = hdu
-                break
+# --- 현재 시간 (UTC 기준) ---
+now = datetime.utcnow()
+now_astropy = Time(now)
 
-        if hdu_img is None:
-            st.error("이미지 데이터를 포함한 HDU를 찾을 수 없습니다.")
-            st.stop()
+# --- 은하 분류 (단순 허블 분류 예측기) ---
+def classify_galaxy(mean_brightness, shape):
+    if mean_brightness > 1000:
+        return "🌟 타원은하 (E형)"
+    elif shape[0] > shape[1] * 1.5:
+        return "💫 나선은하 (S형)"
+    else:
+        return "🌌 불규칙은하 (Irr형)"
 
-        image_data = hdu_img.data
-        header = hdu_img.header
+# --- 관측소 이름과 좌표 추정 DB (일부 예시) ---
+observatory_db = {
+    "KECK": {"name": "Keck Observatory", "lat": 19.8283, "lon": -155.4781},
+    "VLT": {"name": "Very Large Telescope", "lat": -24.6270, "lon": -70.4045},
+    "SUBARU": {"name": "Subaru Telescope", "lat": 19.825, "lon": -155.4761},
+    "KPNO": {"name": "Kitt Peak National Observatory", "lat": 31.9583, "lon": -111.5983}
+}
 
-        st.subheader("\U0001F4C4 FITS 기본 정보")
-        st.write(f"관측 대상: {header.get('OBJECT', '알 수 없음')}")
-        st.write(f"관측일자: {header.get('DATE-OBS', '미기록')}")
-        st.write(f"망원경: {header.get('TELESCOP', '미기록')}")
-        st.write(f"필터: {header.get('FILTER', '미기록')}")
-        st.write(f"노출 시간 (초): {header.get('EXPTIME', '미기록')}")
-        st.write(f"이미지 차원: {image_data.shape}")
-        st.write(f"스펙트럼 정보 있음: {'예' if image_data.ndim >= 3 else '아니오'}")
+if uploaded_file:
+    try:
+        with fits.open(uploaded_file) as hdul:
+            image_hdu = None
+            for hdu in hdul:
+                if hdu.data is not None and hdu.is_image:
+                    image_hdu = hdu
+                    break
 
-        wcs = None
-        try:
-            wcs = WCS(header)
-        except Exception:
-            pass
+            if image_hdu is None:
+                st.error("파일에서 유효한 이미지 데이터를 찾을 수 없습니다.")
+            else:
+                header = image_hdu.header
+                data = image_hdu.data
+                data = np.nan_to_num(data)
 
-        st.subheader("\U0001F52C 은하 이미지 시각화")
-        fig, ax = plt.subplots(figsize=(6, 6))
-        norm = simple_norm(image_data, 'sqrt', percent=99)
-        ax.imshow(image_data[0] if image_data.ndim == 3 else image_data, cmap='gray', norm=norm, origin='lower')
-        ax.set_title("은하 이미지")
-        st.pyplot(fig)
+                st.success(f"**'{uploaded_file.name}'** 파일을 성공적으로 처리했습니다.")
+                col1, col2 = st.columns(2)
 
-        st.subheader("\U0001F52D 은하 구조 분석")
-        mean, std = np.mean(image_data), np.std(image_data)
-        threshold = mean + 3 * std
-        binary = (image_data[0] if image_data.ndim == 3 else image_data) > threshold
-        labeled_img = label(binary)
-        regions = regionprops(labeled_img)
+                with col1:
+                    st.header("이미지 정보")
+                    st.text(f"크기: {data.shape[1]} x {data.shape[0]} 픽셀")
+                    if 'OBJECT' in header:
+                        st.text(f"관측 대상: {header['OBJECT']}")
+                    if 'EXPTIME' in header:
+                        st.text(f"노출 시간: {header['EXPTIME']} 초")
 
-        if len(regions) > 0:
-            regions.sort(key=lambda r: r.area, reverse=True)
-            galaxy = regions[0]
-            st.write(f"- 면적 (픽셀 수): {galaxy.area}")
-            st.write(f"- 추정 반지름: {np.sqrt(galaxy.area / np.pi):.1f} px")
-            st.write(f"- 중심 좌표: {galaxy.centroid}")
-            st.write(f"- 타원률 (0 = 원형): {galaxy.eccentricity:.2f}")
-        else:
-            st.write("은하로 추정되는 구조를 찾지 못했습니다.")
+                    st.header("물리량")
+                    mean_brightness = np.mean(data)
+                    st.metric(label="이미지 전체 평균 밝기", value=f"{mean_brightness:.2f}")
 
-        st.subheader("\U0001F30E 거리 및 위치 정보")
-        ra, dec = header.get('RA'), header.get('DEC')
-        z = header.get('REDSHIFT') or header.get('Z')
-        if ra and dec:
-            st.write(f"- 적경(RA): {ra}")
-            st.write(f"- 적위(DEC): {dec}")
-        if z:
-            try:
-                c = 3e5
-                H0 = 70
-                distance = (float(z) * c) / H0
-                st.write(f"- 허블 거리 추정: {distance:.1f} Mpc")
-            except:
-                st.write("- 적색편이 값이 숫자가 아닙니다.")
+                    # --- 허블 분류
+                    classification = classify_galaxy(mean_brightness, data.shape)
+                    st.metric(label="예상 은하 유형", value=classification)
 
-        st.subheader("\U0001F6F0️ 운동 및 활동성 해석")
-        if image_data.ndim >= 3:
-            velocity_map = image_data[-1] - image_data[0]
-            fig2, ax2 = plt.subplots(figsize=(5, 5))
-            im = ax2.imshow(velocity_map, cmap='RdBu_r', origin='lower')
-            fig2.colorbar(im, ax=ax2, label='상대 속도')
-            ax2.set_title("스펙트럼 큐브 속도 분포")
-            st.pyplot(fig2)
-        else:
-            st.write("스펙트럼 큐브가 없어 운동 분석 불가")
+                with col2:
+                    st.header("이미지 미리보기")
+                    if data.max() == data.min():
+                        norm_data = np.zeros(data.shape, dtype=np.uint8)
+                    else:
+                        scale_min = np.percentile(data, 5)
+                        scale_max = np.percentile(data, 99.5)
+                        data_clipped = np.clip(data, scale_min, scale_max)
+                        norm_data = (255 * (data_clipped - scale_min) / (scale_max - scale_min)).astype(np.uint8)
 
-        st.subheader("\U0001F52A 화학적 물리적 성질")
-        temp = header.get('TEFF') or header.get('TEMP')
-        metal = header.get('METAL') or header.get('FE_H')
-        sfr = header.get('SFR')
-        st.write(f"- 별의 유효 온도: {temp if temp else '정보 없음'}")
-        st.write(f"- 금속성 [Fe/H]: {metal if metal else '정보 없음'}")
-        st.write(f"- 별 생성률 SFR: {sfr if sfr else '정보 없음'}")
+                    img = Image.fromarray(norm_data)
+                    st.image(img, caption="업로드된 FITS 이미지", use_container_width=True)
 
-        st.subheader("\U0001F680 활동성 은하핵(AGN) 여부")
-        agn = header.get('AGN') or header.get('ACTIVITY')
-        if agn:
-            st.write(f"- AGN 존재 여부: {agn}")
-        else:
-            st.write("- AGN 관련 정보 없음")
+                # --- 사이드바: 현재 천체 위치 계산 ---
+                st.sidebar.header("🧭 현재 천체 위치 (서울 기준)")
+                if 'RA' in header and 'DEC' in header:
+                    try:
+                        target_coord = SkyCoord(ra=header['RA'], dec=header['DEC'], unit=('hourangle', 'deg'))
+                        altaz = target_coord.transform_to(AltAz(obstime=now_astropy, location=seoul_location))
+                        st.sidebar.metric("고도 (°)", f"{altaz.alt.degree:.2f}")
+                        st.sidebar.metric("방위각 (°)", f"{altaz.az.degree:.2f}")
+                    except Exception as e:
+                        st.sidebar.warning(f"천체 위치 계산 실패: {e}")
+                else:
+                    st.sidebar.info("FITS 헤더에 RA/DEC 정보가 없습니다.")
 
-        st.subheader("\U0001F3A8 H-R 도표 (임의의 색지수 기반)")
-        if 'B_MAG' in header and 'V_MAG' in header:
-            b = float(header['B_MAG'])
-            v = float(header['V_MAG'])
-            color_index = b - v
-            hr_data = pd.DataFrame({"색지수 B-V": [color_index], "광도": [v]})
-            fig_hr, ax_hr = plt.subplots()
-            ax_hr.scatter(hr_data["색지수 B-V"], hr_data["광도"], color='blue')
-            ax_hr.invert_yaxis()
-            ax_hr.set_xlabel("B-V 색지수")
-            ax_hr.set_ylabel("밝기 (V)")
-            ax_hr.set_title("H-R 도표 위치")
-            st.pyplot(fig_hr)
+                # --- 관측소 위치 시각화 ---
+                st.subheader("🗺️ 관측소 위치 표시")
+                observatory_found = None
+                for key in observatory_db:
+                    if key in header.get('TELESCOP', ''):
+                        observatory_found = observatory_db[key]
+                        break
+                if observatory_found:
+                    st.markdown(f"**관측소 이름:** {observatory_found['name']}")
+                    st.pydeck_chart(pdk.Deck(
+                        initial_view_state=pdk.ViewState(
+                            latitude=observatory_found['lat'],
+                            longitude=observatory_found['lon'],
+                            zoom=4,
+                            pitch=0,
+                        ),
+                        layers=[
+                            pdk.Layer(
+                                'ScatterplotLayer',
+                                data=[observatory_found],
+                                get_position='[lon, lat]',
+                                get_color='[200, 30, 0, 160]',
+                                get_radius=100000,
+                            )
+                        ]
+                    ))
+                else:
+                    st.info("관측소 정보를 찾을 수 없거나, 헤더에 'TELESCOP' 정보가 없습니다.")
 
-        st.subheader("\U0001F31F 세페이드 변광성 거리 측정 시뮬레이션")
-        if 'PERIOD' in header:
-            P = float(header['PERIOD'])
-            Mv = -2.76 * np.log10(P) - 1.0
-            mv = float(header.get('V_MAG', Mv + 10))
-            d = 10 ** ((mv - Mv + 5) / 5)
-            st.write(f"- 주기: {P} 일")
-            st.write(f"- 절대 등급(Mv): {Mv:.2f}")
-            st.write(f"- 거리 추정: {d:.2f} pc")
+    except Exception as e:
+        st.error(f"파일 처리 중 오류가 발생했습니다: {e}")
+        st.warning("파일이 손상되었거나 유효한 FITS 형식이 아닐 수 있습니다.")
+else:
+    st.info("시작하려면 FITS 파일을 업로드해주세요.")
 
-        st.subheader("\U0001FA90 외계행성 트랜싯 시뮬레이션")
-        if 'DEPTH' in header and 'DURATION' in header and 'PERIOD' in header:
-            depth = float(header['DEPTH'])
-            duration = float(header['DURATION'])
-            period = float(header['PERIOD'])
-            time = np.linspace(0, period, 1000)
-            flux = np.ones_like(time)
-            center = period / 2
-            mask = (time > center - duration/2) & (time < center + duration/2)
-            flux[mask] -= depth
-            fig_tr, ax_tr = plt.subplots()
-            ax_tr.plot(time, flux, color='black')
-            ax_tr.set_xlabel("시간 (일)")
-            ax_tr.set_ylabel("상대 광도")
-            ax_tr.set_title("외계행성 트랜싯 곡선")
-            st.pyplot(fig_tr)
-
-        st.subheader("\U0001F4C1 FITS 헤더 전체 보기")
-        if st.checkbox("헤더 전체 보기"):
-            st.code(str(header))
-
-        # --- 사이드바: 현재 천체 위치 계산 ---
-        st.sidebar.header("\U0001F9ED 현재 천체 위치 (서울 기준)")
-
-        now = datetime.datetime.utcnow()
-        now_astropy = Time(now)
-        seoul_location = EarthLocation(lat=37.5665, lon=126.9780, height=38)
-
-        if 'RA' in header and 'DEC' in header:
-            try:
-                target_coord = SkyCoord(ra=header['RA'], dec=header['DEC'], unit=('hourangle', 'deg'))
-                altaz = target_coord.transform_to(AltAz(obstime=now_astropy, location=seoul_location))
-                altitude = altaz.alt.degree
-                azimuth = altaz.az.degree
-                st.sidebar.metric("고도 (°)", f"{altitude:.2f}")
-                st.sidebar.metric("방위각 (°)", f"{azimuth:.2f}")
-            except Exception as e:
-                st.sidebar.warning(f"천체 위치 계산 실패: {e}")
-        else:
-            st.sidebar.info("FITS 헤더에 RA/DEC 정보가 없습니다.")
-
-        st.success("분석 완료! 더 많은 파일을 올려 실험해보세요.")
-
+# --- 💬 댓글 기능 (세션 기반) ---
 st.divider()
-
-st.header("\U0001F4AC 의견 남기기")
-
+st.header("💬 의견 남기기")
 if "comments" not in st.session_state:
     st.session_state.comments = []
-
 with st.form(key="comment_form"):
     name = st.text_input("이름을 입력하세요", key="name_input")
     comment = st.text_area("댓글을 입력하세요", key="comment_input")
     submitted = st.form_submit_button("댓글 남기기")
-
     if submitted:
         if name.strip() and comment.strip():
             st.session_state.comments.append((name.strip(), comment.strip()))
             st.success("댓글이 저장되었습니다.")
         else:
             st.warning("이름과 댓글을 모두 입력해주세요.")
-
 if st.session_state.comments:
-    st.subheader("\U0001F4CB 전체 댓글")
+    st.subheader("📋 전체 댓글")
     for i, (n, c) in enumerate(reversed(st.session_state.comments), 1):
         st.markdown(f"**{i}. {n}**: {c}")
 else:
